@@ -20,7 +20,9 @@ volatile uint16_t ms_count2 = 0;//счетчик для светодиода
 volatile uint16_t voltage;//принимаемая уставка
 volatile int z = 0;
 volatile int msg_rec;//флаг приема посылки
-float Kp = 0.1; // значение пропорционального коэффициента
+volatile uint16_t control_signal;
+volatile uint16_t setpoint;
+float Kp = 0.02; // значение пропорционального коэффициента
 
 //message $01$03$E8$D5
 
@@ -48,7 +50,8 @@ ISR(USART_RXC_vect){
 		
 		if(received_data[0] == DEVICE_ADDRESS){
 			
-			if(crc8(received_data, 3) == received_data[3]){
+			//if(crc8(received_data, 3) == received_data[3])
+			{
 				led_on = 1;
 				msg_rec = 1;
 				LED1_on();// индикатор успешного приема посылки
@@ -116,20 +119,46 @@ void delay_ms(uint16_t ms) {
 void init_adc() {
 	//ADC1 input
 	DDRC &=~ (1 << 1);
-	ADMUX |= (1 << MUX0);
-	ADMUX &=~ (1 << MUX3) | (1 << MUX2) | (1 << MUX1);
-
+	
+	
+	ADCSRA |= (1 << ADEN);//ADC enable
 	ADCSRA |= (1 << ADFR);// режим непрерывного преоразования
+	ADCSRA |= (1 << ADPS2) | (1 << ADPS1) | (0 << ADPS0);
 	ADMUX |= (1 << REFS1) | (1 << REFS0);// внутренний ИОН 2.56 В
 	ADMUX &=~ (1 << ADLAR);// po pravoi storone
-	ADCSRA = (1 << ADEN) | (1 << ADPS2) | (1 << ADPS1);
+	ADMUX |= (1 << MUX0);
+	ADMUX &=~ (1 << MUX3) | (1 << MUX2) | (1 << MUX1);
+	ADCSRA |= (1 << ADSC);
+	//ADMUX |= (0 << REFS1) | (1 << REFS0);
+	
+		
+	/*Maksim
+		//ADC1 input
+		//DDRC &=~ (1 << 1);
+		//ADMUX |= (1 << MUX0);
+		//ADMUX &=~ (1 << MUX3) | (1 << MUX2) | (1 << MUX1);
+
+		//ADCSRA |= (1 << ADFR);// режим непрерывного преоразования
+		//ADMUX |= (1 << REFS1) | (1 << REFS0);// внутренний ИОН 2.56 В
+		ADMUX |= (0 << REFS1) | (1 << REFS0);
+		//ADMUX &=~ (1 << ADLAR);// po pravoi storone
+		ADCSRA = (1 << ADEN) | (1 << ADPS2) | (1 << ADPS1);
+		*/
 }
 
 uint16_t read_adc() {
+	while(1){
+		if(ADCSRA & (1 << 4)){
+			ADCSRA |= (1 << 4);	
+		}
+	return ADC;	
+	}
+	/*Maksim (uint8_t channel)
+	ADMUX = (ADMUX & 0xF8) | (channel & 0x07);
 	ADCSRA |= (1 << ADSC);
 	while (ADCSRA & (1 << ADSC));
 	return ADC;
-
+	*/
 }
 
 void init_led() {
@@ -140,9 +169,21 @@ void init_led() {
 }
 
 void init_pwm() {
+
+	TCCR1A = (1 <<COM1A1) | (0 << COM1A0) | (1 << WGM11) | (1 << WGM10);
+	TCCR1B = (1 <<CS11);
+	
+	
+	/* MAKSIM invert
+	TCCR1A = (1 <<COM1A1) | (1 << COM1A0) | (1 << WGM11) | (1 << WGM10);
+	TCCR1B = (1 <<CS11);
+	*/
+	
+	/*
+	ICR1 = F_CPU / (PWM_FREQ * 2);//2000
 	
 	//PWM Frequency
-	ICR1 = F_CPU / (PWM_FREQ * 8 * 2);//250
+	ICR1 = F_CPU / (PWM_FREQ * 2);//2000
 	
 	//prescaler 8
 	TCCR1B |= (1<<CS11);
@@ -158,23 +199,25 @@ void init_pwm() {
 	TCCR1A |= (1<<WGM11);
 	TCCR1B |= (1<<WGM12);
 	TCCR1B |= (1<<WGM13);
-	
+	*/
 	//PB1 output
 	DDRB |= (1 << 1);
 	
 	//Low level signal PB1
 	PORTB &=~ (1<<1);
+	
 }
 
-void set_pwm(uint16_t value) {
-	OCR1A = value; // Установка значения ШИМ
+void set_pwm() {
+	OCR1A = control_signal; // Установка значения ШИМ
 }
 
 int main(void) {
-	uint16_t setpoint = (1023 * (voltage / 1000)) / 2.56; // принимаемая уставка
+	
 	uint16_t current_value;
 	int16_t error;
-	int16_t control_signal;
+	
+	//int16_t control_signal;
 
 	init_adc();
 	init_pwm();
@@ -186,9 +229,19 @@ int main(void) {
 	sei();
 
 	while (1) {
+		setpoint = (float)1023 * voltage / (float)2560; // принимаемая уставка
 		current_value = read_adc();
-		error = setpoint - current_value; // Вычисление ошибки
-		control_signal = Kp * error; // Вычисление управляющего воздействия
+		if(setpoint > current_value){
+			error = setpoint - current_value; 	
+			control_signal += (Kp * error); 
+		}
+		else{
+			error = current_value - setpoint;
+			control_signal -= (Kp * error);
+		}
+		
+		// Вычисление ошибки
+		//control_signal += (Kp * error); // Вычисление управляющего воздействия
 		
 		// Ограничение управляющего сигнала в пределах допустимых значений
 		if (control_signal < 0) {
@@ -198,29 +251,29 @@ int main(void) {
 			control_signal = 1023;
 		}
 		
-		set_pwm((uint16_t)control_signal); // Применение управляющего воздействия
+		set_pwm(control_signal); // Применение управляющего воздействия
 
 		// Проверка значения АЦП и мигание светодиода
-		uint16_t lower_bound = setpoint - (setpoint / 10);
-		uint16_t upper_bound = setpoint + (setpoint / 10);
+		uint16_t lower_bound = setpoint - (setpoint / 5);
+		uint16_t upper_bound = setpoint + (setpoint / 5);
 		if(msg_rec == 1){
 			//msg_rec = 0;
 			if (current_value >= lower_bound && current_value <= upper_bound) {
-				PORTB |= (1 << 2);
-				/*if(ms_count2 == 100){
+				//PORTB |= (1 << 2);
+				if(ms_count2 >= 500){
 					PORTB ^= (1 << 2);
 					ms_count2 = 0;
-				}*/
+				}
 			}
 			else {
-				PORTB &=~ (1 << 2);
-				/*if(ms_count2 == 10){
+				//PORTB &=~ (1 << 2);
+				if(ms_count2 >= 100){
 					PORTB ^= (1 << 2);
 					ms_count2 = 0;
-				}*/
+				}
 			}
 		}
-		delay_ms(100); // Задержка для стабилизации
+		//delay_ms(100); // Задержка для стабилизации
 	}
 	return 0;
 }
